@@ -1,0 +1,1995 @@
+# Race Timer Application
+
+This is a complete implementation of a race timing application similar to RaceClocker, built with:
+- Python/Flask for the backend
+- SQLite for the database
+- Bootstrap for styling
+- JavaScript (vanilla, no jQuery) for frontend functionality
+
+## Project Structure
+
+```
+race_timer/
+├── app.py                 # Main Flask application
+├── config.py              # Configuration settings
+├── models.py              # SQLite database models
+├── forms.py               # Flask-WTF forms
+├── static/                # Static files
+│   ├── css/
+│   │   └── style.css      # Custom CSS
+│   └── js/
+│       └── script.js      # Custom JavaScript
+├── templates/             # HTML templates
+│   ├── base.html          # Base template
+│   ├── index.html         # Homepage
+│   ├── admin/             # Admin templates
+│   │   ├── dashboard.html
+│   │   ├── races.html
+│   │   ├── runners.html
+│   │   └── results.html
+│   └── public/            # Public templates
+│       ├── races.html
+│       ├── race_details.html
+│       ├── signup.html
+│       └── results.html
+└── instance/              # Instance-specific files
+    └── race_timer.db      # SQLite database
+```
+
+## Step 1: Setup and Dependencies
+
+First, let's set up our environment and install necessary packages:
+
+```python
+# requirements.txt
+flask==2.2.3
+flask-sqlalchemy==3.0.3
+flask-login==0.6.2
+flask-wtf==1.1.1
+email-validator==1.3.1
+python-dotenv==1.0.0
+```
+
+## Step 2: Database Models
+
+Let's create our database models in `models.py`:
+
+```python
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin
+from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+
+db = SQLAlchemy()
+
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128))
+    is_admin = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    race_entries = db.relationship('RaceEntry', backref='runner', lazy=True)
+    
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+        
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+    
+    def __repr__(self):
+        return f'<User {self.username}>'
+
+
+class Race(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    location = db.Column(db.String(200))
+    date = db.Column(db.Date, nullable=False)
+    start_time = db.Column(db.Time)
+    distance = db.Column(db.Float)  # in kilometers
+    max_participants = db.Column(db.Integer)
+    is_active = db.Column(db.Boolean, default=True)
+    is_started = db.Column(db.Boolean, default=False)
+    start_timestamp = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    entries = db.relationship('RaceEntry', backref='race', lazy=True)
+    
+    def __repr__(self):
+        return f'<Race {self.name}>'
+
+
+class RaceEntry(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    bib_number = db.Column(db.Integer, nullable=False)
+    race_id = db.Column(db.Integer, db.ForeignKey('race.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    registration_time = db.Column(db.DateTime, default=datetime.utcnow)
+    start_time = db.Column(db.DateTime)  # When the race started
+    finish_time = db.Column(db.DateTime)  # When runner finished
+    status = db.Column(db.String(20), default='registered')  # registered, started, finished, DNF
+    
+    @property
+    def elapsed_time(self):
+        if self.start_time and self.finish_time:
+            return (self.finish_time - self.start_time).total_seconds()
+        return None
+    
+    def __repr__(self):
+        return f'<RaceEntry {self.bib_number}>'
+```
+
+## Step 3: Flask Application Setup
+
+Now, let's create our main Flask application in `app.py`:
+
+```python
+import os
+from flask import Flask, render_template, redirect, url_for, flash, request, jsonify
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from datetime import datetime
+from werkzeug.security import generate_password_hash
+
+from models import db, User, Race, RaceEntry
+from forms import LoginForm, RegistrationForm, RaceForm, RaceEntryForm
+
+# App initialization
+app = Flask(__name__, instance_relative_config=True)
+app.config.from_mapping(
+    SECRET_KEY='dev',
+    SQLALCHEMY_DATABASE_URI='sqlite:///' + os.path.join(app.instance_path, 'race_timer.db'),
+    SQLALCHEMY_TRACK_MODIFICATIONS=False,
+)
+
+# Ensure the instance folder exists
+try:
+    os.makedirs(app.instance_path)
+except OSError:
+    pass
+
+# Initialize database
+db.init_app(app)
+
+# Initialize login manager
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# Create tables
+@app.before_first_request
+def create_tables():
+    db.create_all()
+    # Create admin user if not exists
+    admin = User.query.filter_by(username='admin').first()
+    if admin is None:
+        admin = User(username='admin', email='admin@example.com', is_admin=True)
+        admin.set_password('adminpassword')
+        db.session.add(admin)
+        db.session.commit()
+
+# Routes
+@app.route('/')
+def index():
+    upcoming_races = Race.query.filter(Race.date >= datetime.utcnow().date(), Race.is_active == True).order_by(Race.date).limit(5).all()
+    return render_template('index.html', races=upcoming_races)
+
+# Authentication routes
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    form = LoginForm()
+    if form.validate_on_submit():
+        user = User.query.filter_by(username=form.username.data).first()
+        if user and user.check_password(form.password.data):
+            login_user(user, remember=form.remember_me.data)
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('index'))
+        flash('Invalid username or password')
+    
+    return render_template('login.html', form=form)
+
+@app.route('/logout')
+def logout():
+    logout_user()
+    return redirect(url_for('index'))
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    form = RegistrationForm()
+    if form.validate_on_submit():
+        user = User(username=form.username.data, email=form.email.data)
+        user.set_password(form.password.data)
+        db.session.add(user)
+        db.session.commit()
+        flash('Registration successful! Please log in.')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html', form=form)
+
+# Public routes
+@app.route('/races')
+def races():
+    upcoming_races = Race.query.filter(Race.date >= datetime.utcnow().date(), Race.is_active == True).order_by(Race.date).all()
+    past_races = Race.query.filter(Race.date < datetime.utcnow().date(), Race.is_active == True).order_by(Race.date.desc()).all()
+    return render_template('public/races.html', upcoming_races=upcoming_races, past_races=past_races)
+
+@app.route('/race/<int:race_id>')
+def race_details(race_id):
+    race = Race.query.get_or_404(race_id)
+    return render_template('public/race_details.html', race=race)
+
+@app.route('/race/<int:race_id>/signup', methods=['GET', 'POST'])
+@login_required
+def race_signup(race_id):
+    race = Race.query.get_or_404(race_id)
+    
+    # Check if race is in the future and active
+    if race.date < datetime.utcnow().date() or not race.is_active:
+        flash('Registration for this race is closed.')
+        return redirect(url_for('race_details', race_id=race_id))
+    
+    # Check if user is already registered
+    existing_entry = RaceEntry.query.filter_by(race_id=race_id, user_id=current_user.id).first()
+    if existing_entry:
+        flash('You are already registered for this race.')
+        return redirect(url_for('race_details', race_id=race_id))
+    
+    form = RaceEntryForm()
+    if form.validate_on_submit():
+        # Generate bib number
+        last_entry = RaceEntry.query.filter_by(race_id=race_id).order_by(RaceEntry.bib_number.desc()).first()
+        bib_number = 1 if not last_entry else last_entry.bib_number + 1
+        
+        entry = RaceEntry(
+            bib_number=bib_number,
+            race_id=race_id,
+            user_id=current_user.id
+        )
+        db.session.add(entry)
+        db.session.commit()
+        flash('You have successfully registered for this race!')
+        return redirect(url_for('race_details', race_id=race_id))
+    
+    return render_template('public/signup.html', race=race, form=form)
+
+@app.route('/race/<int:race_id>/results')
+def race_results(race_id):
+    race = Race.query.get_or_404(race_id)
+    results = RaceEntry.query.filter_by(race_id=race_id, status='finished').join(User).order_by(RaceEntry.elapsed_time).all()
+    return render_template('public/results.html', race=race, results=results)
+
+# Admin routes
+@app.route('/admin/dashboard')
+@login_required
+def admin_dashboard():
+    if not current_user.is_admin:
+        flash('Access denied: Admin privileges required.')
+        return redirect(url_for('index'))
+    
+    active_races = Race.query.filter_by(is_active=True).order_by(Race.date).all()
+    upcoming_races = [race for race in active_races if race.date >= datetime.utcnow().date()]
+    ongoing_races = [race for race in active_races if race.is_started and not all(entry.status == 'finished' for entry in race.entries)]
+    
+    return render_template('admin/dashboard.html', 
+                           upcoming_races=upcoming_races, 
+                           ongoing_races=ongoing_races)
+
+@app.route('/admin/races')
+@login_required
+def admin_races():
+    if not current_user.is_admin:
+        flash('Access denied: Admin privileges required.')
+        return redirect(url_for('index'))
+    
+    races = Race.query.order_by(Race.date.desc()).all()
+    return render_template('admin/races.html', races=races)
+
+@app.route('/admin/race/new', methods=['GET', 'POST'])
+@login_required
+def create_race():
+    if not current_user.is_admin:
+        flash('Access denied: Admin privileges required.')
+        return redirect(url_for('index'))
+    
+    form = RaceForm()
+    if form.validate_on_submit():
+        race = Race(
+            name=form.name.data,
+            description=form.description.data,
+            location=form.location.data,
+            date=form.date.data,
+            start_time=form.start_time.data,
+            distance=form.distance.data,
+            max_participants=form.max_participants.data,
+            is_active=True
+        )
+        db.session.add(race)
+        db.session.commit()
+        flash('Race created successfully!')
+        return redirect(url_for('admin_races'))
+    
+    return render_template('admin/race_form.html', form=form, title='Create Race')
+
+@app.route('/admin/race/<int:race_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_race(race_id):
+    if not current_user.is_admin:
+        flash('Access denied: Admin privileges required.')
+        return redirect(url_for('index'))
+    
+    race = Race.query.get_or_404(race_id)
+    form = RaceForm(obj=race)
+    
+    if form.validate_on_submit():
+        form.populate_obj(race)
+        db.session.commit()
+        flash('Race updated successfully!')
+        return redirect(url_for('admin_races'))
+    
+    return render_template('admin/race_form.html', form=form, title='Edit Race')
+
+@app.route('/admin/race/<int:race_id>/start', methods=['POST'])
+@login_required
+def start_race(race_id):
+    if not current_user.is_admin:
+        return jsonify({'success': False, 'message': 'Admin privileges required'}), 403
+    
+    race = Race.query.get_or_404(race_id)
+    
+    if race.is_started:
+        return jsonify({'success': False, 'message': 'Race has already started'}), 400
+    
+    now = datetime.utcnow()
+    race.is_started = True
+    race.start_timestamp = now
+    
+    # Update all registered entries to started status
+    for entry in race.entries:
+        entry.status = 'started'
+        entry.start_time = now
+    
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Race started successfully'})
+
+@app.route('/admin/race/<int:race_id>/finish', methods=['POST'])
+@login_required
+def finish_runner(race_id):
+    if not current_user.is_admin:
+        return jsonify({'success': False, 'message': 'Admin privileges required'}), 403
+    
+    race = Race.query.get_or_404(race_id)
+    bib_number = request.form.get('bib_number')
+    
+    if not race.is_started:
+        return jsonify({'success': False, 'message': 'Race has not started yet'}), 400
+    
+    entry = RaceEntry.query.filter_by(race_id=race_id, bib_number=bib_number).first()
+    
+    if not entry:
+        return jsonify({'success': False, 'message': f'No runner with bib number {bib_number}'}), 404
+    
+    if entry.status == 'finished':
+        return jsonify({'success': False, 'message': 'Runner has already finished'}), 400
+    
+    entry.status = 'finished'
+    entry.finish_time = datetime.utcnow()
+    db.session.commit()
+    
+    return jsonify({
+        'success': True, 
+        'message': f'Runner {bib_number} finished',
+        'elapsed_time': entry.elapsed_time
+    })
+
+@app.route('/admin/race/<int:race_id>/entries')
+@login_required
+def race_entries(race_id):
+    if not current_user.is_admin:
+        flash('Access denied: Admin privileges required.')
+        return redirect(url_for('index'))
+    
+    race = Race.query.get_or_404(race_id)
+    entries = RaceEntry.query.filter_by(race_id=race_id).join(User).all()
+    
+    return render_template('admin/race_entries.html', race=race, entries=entries)
+
+@app.route('/admin/race/<int:race_id>/timing')
+@login_required
+def race_timing(race_id):
+    if not current_user.is_admin:
+        flash('Access denied: Admin privileges required.')
+        return redirect(url_for('index'))
+    
+    race = Race.query.get_or_404(race_id)
+    entries = RaceEntry.query.filter_by(race_id=race_id).join(User).all()
+    
+    return render_template('admin/race_timing.html', race=race, entries=entries)
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+## Step 4: Flask Forms
+
+Let's create our forms in `forms.py`:
+
+```python
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField, BooleanField, SubmitField, TextAreaField, FloatField, IntegerField, DateField, TimeField
+from wtforms.validators import DataRequired, Email, EqualTo, ValidationError, Optional
+from models import User
+
+class LoginForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
+    remember_me = BooleanField('Remember Me')
+    submit = SubmitField('Sign In')
+
+class RegistrationForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    password = PasswordField('Password', validators=[DataRequired()])
+    password2 = PasswordField('Repeat Password', validators=[DataRequired(), EqualTo('password')])
+    submit = SubmitField('Register')
+    
+    def validate_username(self, username):
+        user = User.query.filter_by(username=username.data).first()
+        if user is not None:
+            raise ValidationError('Please use a different username.')
+    
+    def validate_email(self, email):
+        user = User.query.filter_by(email=email.data).first()
+        if user is not None:
+            raise ValidationError('Please use a different email address.')
+
+class RaceForm(FlaskForm):
+    name = StringField('Race Name', validators=[DataRequired()])
+    description = TextAreaField('Description')
+    location = StringField('Location')
+    date = DateField('Date', validators=[DataRequired()])
+    start_time = TimeField('Start Time', validators=[Optional()])
+    distance = FloatField('Distance (km)', validators=[Optional()])
+    max_participants = IntegerField('Maximum Participants', validators=[Optional()])
+    is_active = BooleanField('Active')
+    submit = SubmitField('Save Race')
+
+class RaceEntryForm(FlaskForm):
+    agree_to_terms = BooleanField('I agree to the race terms and conditions', validators=[DataRequired()])
+    submit = SubmitField('Register for Race')
+```
+
+## Step 5: HTML Templates
+
+Now let's create the HTML templates. Starting with the base template:
+
+### base.html
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Race Timer{% endblock %}</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">Race Timer</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('index') }}">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('races') }}">Races</a>
+                    </li>
+                    {% if current_user.is_authenticated and current_user.is_admin %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown">
+                            Admin
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="{{ url_for('admin_dashboard') }}">Dashboard</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('admin_races') }}">Manage Races</a></li>
+                        </ul>
+                    </li>
+                    {% endif %}
+                </ul>
+                <ul class="navbar-nav">
+                    {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <span class="nav-link text-light">Welcome, {{ current_user.username }}</span>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                    </li>
+                    {% else %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('register') }}">Register</a>
+                    </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mt-4">
+        {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        <div class="row">
+            <div class="col">
+                {% for message in messages %}
+                <div class="alert alert-info alert-dismissible fade show">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="mt-5 py-3 bg-light">
+        <div class="container text-center">
+            <p>&copy; 2025 Race Timer App</p>
+        </div>
+    </footer>
+
+    <!-- Bootstrap JS Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Custom JavaScript -->
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+```
+
+### index.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Race Timer - Home{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h1 class="mb-4">Welcome to Race Timer</h1>
+        <p class="lead">Track your races, register for events, and manage your race timing all in one place.</p>
+        
+        <div class="mt-4">
+            <h2>Upcoming Races</h2>
+            {% if races %}
+            <div class="list-group">
+                {% for race in races %}
+                <a href="{{ url_for('race_details', race_id=race.id) }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">{{ race.name }}</h5>
+                        <small>{{ race.date.strftime('%b %d, %Y') }}</small>
+                    </div>
+                    <p class="mb-1">{{ race.location }}</p>
+                    {% if race.distance %}
+                    <small>Distance: {{ race.distance }}km</small>
+                    {% endif %}
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p>No upcoming races at the moment.</p>
+            {% endif %}
+            
+            <div class="mt-3">
+                <a href="{{ url_for('races') }}" class="btn btn-primary">View All Races</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                Quick Links
+            </div>
+            <ul class="list-group list-group-flush">
+                <li class="list-group-item">
+                    <a href="{{ url_for('races') }}">Browse Races</a>
+                </li>
+                {% if current_user.is_authenticated %}
+                    {% if current_user.is_admin %}
+                    <li class="list-group-item">
+                        <a href="{{ url_for('admin_dashboard') }}">Admin Dashboard</a>
+                    </li>
+                    <li class="list-group-item">
+                        <a href="{{ url_for('create_race') }}">Create New Race</a>
+                    </li>
+                    {% endif %}
+                {% else %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('login') }}">Log In</a>
+                </li>
+                <li class="list-group-item">
+                    <a href="{{ url_for('register') }}">Register</a>
+                </li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### login.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Login - Race Timer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h2>Login</h2>
+            </div>
+            <div class="card-body">
+                <form method="post" action="{{ url_for('login') }}">
+                    {{ form.hidden_tag() }}
+                    
+                    <div class="mb-3">
+                        {{ form.username.label(class="form-label") }}
+                        {{ form.username(class="form-control") }}
+                        {% for error in form.username.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.password.label(class="form-label") }}
+                        {{ form.password(class="form-control") }}
+                        {% for error in form.password.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3 form-check">
+                        {{ form.remember_me(class="form-check-input") }}
+                        {{ form.remember_me.label(class="form-check-label") }}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.submit(class="btn btn-primary") }}
+                    </div>
+                </form>
+                
+                <div class="mt-3">
+                    <p>New User? <a href="{{ url_for('register') }}">Register here</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### register.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Register - Race Timer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h2>Register</h2>
+            </div>
+            <div class="card-body">
+                <form method="post" action="{{ url_for('register') }}">
+                    {{ form.hidden_tag() }}
+                    
+                    <div class="mb-3">
+                        {{ form.username.label(class="form-label") }}
+                        {{ form.username(class="form-control") }}
+                        {% for error in form.username.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.email.label(class="form-label") }}
+                        {{ form.email(class="form-control") }}
+                        {% for error in form.email.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.password.label(class="form-label") }}
+                        {{ form.password(class="form-control") }}
+                        {% for error in form.password.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.password2.label(class="form-label") }}
+                        {{ form.password2(class="form-control") }}
+                        {% for error in form.password2.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.submit(class="btn btn-primary") }}
+                    </div>
+                </form>
+                
+                <div class="mt-3">
+                    <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### public/races.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Races - Race Timer{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Races</h1>
+
+<ul class="nav nav-tabs mb-4" id="raceTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming" type="button" role="tab">
+            Upcoming Races
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="past-tab" data-bs-toggle="tab" data-bs-target="#past" type="button" role="tab">
+            Past Races
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content" id="raceTabContent">
+    <div class="tab-pane fade show active" id="upcoming" role="tabpanel">
+        {% if upcoming_races %}
+        <div class="row row-cols-1 row-cols-md-2 g-4">
+            {% for race in upcoming_races %}
+            <div class="col">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ race.name }}</h5>
+                        <h6 class="card-subtitle mb-2 text-muted">{{ race.date.strftime('%B %d, %Y') }}</h6>
+                        <p class="card-text">
+                            <strong>Location:</strong> {{ race.location }}<br>
+                            {% if race.distance %}
+                            <strong>Distance:</strong> {{ race.distance }}km<br>
+                            {% endif %}
+                            {% if race.start_time %}
+                            <strong>Start Time:</strong> {{ race.start_time.strftime('%H:%M') }}<br>
+                            {% endif %}
+                        </p>
+                        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-primary">View Details</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info">No upcoming races found.</div>
+        {% endif %}
+    </div>
+    
+    <div class="tab-pane fade" id="past" role="tabpanel">
+        {% if past_races %}
+        <div class="row row-cols-1 row-cols-md-2 g-4">
+            {% for race in past_races %}
+            <div class="col">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ race.name }}</h5>
+                        <h6 class="card-subtitle mb-2 text-muted">{{ race.date.strftime('%B %d, %Y') }}</h6>
+                        <p class="card-text">
+                            <strong>Location:</strong> {{ race.location }}<br>
+                            {% if race.distance %}
+                            <strong>Distance:</strong> {{ race.distance }}km<br>
+                            {% endif %}
+                        </p>
+                        <div class="d-flex gap-2">
+                            <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-outline-primary">View Details</a>
+                            <a href="{{ url_for('race_results', race_id=race.id) }}" class="btn btn-success">Results</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info">No past races found.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+```
+
+### public/race_details.html
+```html
+{% extends "base.html" %}
+
+{% block title %}{{ race.name }} - Race Details{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h1 class="mb-3">{{ race.name }}</h1>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="mb-3">
+                    <strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}
+                </div>
+                
+                {% if race.start_time %}
+                <div class="mb-3">
+                    <strong>Start Time:</strong> {{ race.start_time.strftime('%H:%M') }}
+                </div>
+                {% endif %}
+                
+                <div class="mb-3">
+                    <strong>Location:</strong> {{ race.location }}
+                </div>
+                
+                {% if race.distance %}
+                <div class="mb-3">
+                    <strong>Distance:</strong> {{ race.distance }}km
+                </div>
+                {% endif %}
+                
+                {% if race.max_participants %}
+                <div class="mb-3">
+                    <strong>Maximum Participants:</strong> {{ race.max_participants }}
+                    <small class="text-muted">({{ race.entries|length }} registered so far)</small>
+                </div>
+                {% endif %}
+                
+                {% if race.description %}
+                <div class="mb-3">
+                    <strong>Description:</strong>
+                    <p>{{ race.description }}</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="mb-4">
+            {% if race.date >= current_user.created_at.date() and race.is_active %}
+                {% set is_registered = race.entries|selectattr('user_id', 'equalto', current_user.id)|list|length > 0 if current_user.is_authenticated else False %}
+                
+                {% if is_registered %}
+                    <div class="alert alert-success">
+                        <strong>You are registered for this race!</strong>
+                        {% set entry = race.entries|selectattr('user_id', 'equalto', current_user.id)|first %}
+                        <p class="mb-0">Your bib number: <strong>{{ entry.bib_number }}</strong></p>
+                    </div>
+                {% elif race.max_participants and race.entries|length >= race.max_participants %}
+                    <div class="alert alert-warning">
+                        This race has reached its maximum number of participants.
+                    </div>
+                {% elif current_user.is_authenticated %}
+                    <a href="{{ url_for('race_signup', race_id=race.id) }}" class="btn btn-primary btn-lg">Register for this Race</a>
+                {% else %}
+                    <div class="alert alert-info">
+                        <a href="{{ url_for('login') }}">Log in</a> or <a href="{{ url_for('register') }}">register</a> to sign up for this race.
+                    </div>
+                {% endif %}
+            {% elif race.date < current_user.created_at.date() %}
+                <div class="alert alert-secondary">
+                    This race has already taken place.
+                    <a href="{{ url_for('race_results', race_id=race.id) }}" class="btn btn-outline-primary ms-3">View Results</a>
+                </div>
+            {% else %}
+                <div class="alert alert-warning">
+                    Registration for this race is closed.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                Quick Links
+            </div>
+            <ul class="list-group list-group-flush">
+                <li class="list-group-item">
+                    <a href="{{ url_for('races') }}">Back to All Races</a>
+                </li>
+                {% if race.date < current_user.created_at.date() %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_results', race_id=race.id) }}">View Race Results</a>
+                </li>
+                {% endif %}
+                {% if current_user.is_authenticated and current_user.is_admin %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('edit_race', race_id=race.id) }}">Edit Race</a>
+                </li>
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_entries', race_id=race.id) }}">View Entries</a>
+                </li>
+                {% if race.is_active and not race.is_started %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_timing', race_id=race.id) }}">Start Race</a>
+                </li>
+                {% elif race.is_started %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_timing', race_id=race.id) }}">Race Timing</a>
+                </li>
+                {% endif %}
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### public/signup.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Register for {{ race.name }} - Race Timer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h1 class="mb-4">Register for {{ race.name }}</h1>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Race Details</h5>
+                <p><strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}</p>
+                <p><strong>Location:</strong> {{ race.location }}</p>
+                {% if race.distance %}
+                <p><strong>Distance:</strong> {{ race.distance }}km</p>
+                {% endif %}
+                {% if race.start_time %}
+                <p><strong>Start Time:</strong> {{ race.start_time.strftime('%H:%M') }}</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5>Registration Form</h5>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {{ form.hidden_tag() }}
+                    
+                    <div class="mb-3">
+                        <p><strong>Registering as:</strong> {{ current_user.username }}</p>
+                        <p><strong>Email:</strong> {{ current_user.email }}</p>
+                    </div>
+                    
+                    <div class="mb-3 form-check">
+                        {{ form.agree_to_terms(class="form-check-input") }}
+                        {{ form.agree_to_terms.label(class="form-check-label") }}
+                        {% for error in form.agree_to_terms.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.submit(class="btn btn-primary") }}
+                        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### public/results.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Results: {{ race.name }} - Race Timer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-3">Results: {{ race.name }}</h1>
+        <p class="lead">
+            {{ race.date.strftime('%B %d, %Y') }} | {{ race.location }}
+            {% if race.distance %}
+            | {{ race.distance }}km
+            {% endif %}
+        </p>
+        
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Finisher Results</h5>
+            </div>
+            <div class="card-body">
+                {% if results %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Position</th>
+                                <th>Bib</th>
+                                <th>Runner</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for entry in results %}
+                            <tr>
+                                <td>{{ loop.index }}</td>
+                                <td>{{ entry.bib_number }}</td>
+                                <td>{{ entry.runner.username }}</td>
+                                <td>
+                                    {% if entry.elapsed_time %}
+                                    {% set hours = (entry.elapsed_time / 3600)|int %}
+                                    {% set minutes = ((entry.elapsed_time % 3600) / 60)|int %}
+                                    {% set seconds = (entry.elapsed_time % 60)|int %}
+                                    
+                                    {% if hours > 0 %}
+                                    {{ '%d:%02d:%02d'|format(hours, minutes, seconds) }}
+                                    {% else %}
+                                    {{ '%d:%02d'|format(minutes, seconds) }}
+                                    {% endif %}
+                                    {% else %}
+                                    --:--
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info">
+                    No results available yet. This race might not have finished or no runners have completed it.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-primary">Back to Race Details</a>
+        <a href="{{ url_for('races') }}" class="btn btn-secondary">All Races</a>
+    </div>
+</div>
+{% endblock %}
+```
+
+### admin/dashboard.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard - Race Timer{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Admin Dashboard</h1>
+
+<div class="row">
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Ongoing Races</h5>
+            </div>
+            <div class="card-body">
+                {% if ongoing_races %}
+                <div class="list-group">
+                    {% for race in ongoing_races %}
+                    <a href="{{ url_for('race_timing', race_id=race.id) }}" class="list-group-item list-group-item-action">
+                        <div class="d-flex w-100 justify-content-between">
+                            <h5 class="mb-1">{{ race.name }}</h5>
+                            <small>Started: {{ race.start_timestamp.strftime('%H:%M:%S') }}</small>
+                        </div>
+                        <p class="mb-1">{{ race.location }}</p>
+                        <small>{{ race.entries|selectattr('status', 'equalto', 'finished')|list|length }} of {{ race.entries|length }} runners finished</small>
+                    </a>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p>No races currently in progress.</p>
+                <a href="{{ url_for('admin_races') }}" class="btn btn-outline-primary">Manage Races</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Upcoming Races</h5>
+            </div>
+            <div class="card-body">
+                {% if upcoming_races %}
+                <div class="list-group">
+                    {% for race in upcoming_races %}
+                    <a href="{{ url_for('race_details', race_id=race.id) }}" class="list-group-item list-group-item-action">
+                        <div class="d-flex w-100 justify-content-between">
+                            <h5 class="mb-1">{{ race.name }}</h5>
+                            <small>{{ race.date.strftime('%b %d, %Y') }}</small>
+                        </div>
+                        <p class="mb-1">{{ race.location }}</p>
+                        <small>{{ race.entries|length }} runners registered</small>
+                    </a>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p>No upcoming races scheduled.</p>
+                {% endif %}
+                
+                <div class="mt-3">
+                    <a href="{{ url_for('create_race') }}" class="btn btn-success">Create New Race</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0">Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <a href="{{ url_for('admin_races') }}" class="btn btn-outline-primary w-100 py-3">
+                            <i class="bi bi-list-check"></i> Manage Races
+                        </a>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <a href="{{ url_for('create_race') }}" class="btn btn-outline-success w-100 py-3">
+                            <i class="bi bi-plus-circle"></i> Create Race
+                        </a>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <a href="{{ url_for('races') }}" class="btn btn-outline-info w-100 py-3">
+                            <i class="bi bi-eye"></i> View Public Site
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### admin/races.html
+```html
+{% extends "base.html" %}
+
+{% block title %}Manage Races - Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Manage Races</h1>
+    <a href="{{ url_for('create_race') }}" class="btn btn-success">Create New Race</a>
+</div>
+
+{% if races %}
+<div class="table-responsive">
+    <table class="table table-striped table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>Name</th>
+                <th>Date</th>
+                <th>Location</th>
+                <th>Status</th>
+                <th>Runners</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for race in races %}
+            <tr>
+                <td>{{ race.name }}</td>
+                <td>{{ race.date.strftime('%b %d, %Y') }}</td>
+                <td>{{ race.location }}</td>
+                <td>
+                    {% if race.is_started %}
+                    <span class="badge bg-warning">In Progress</span>
+                    {% elif race.date < current_user.created_at.date() %}
+                    <span class="badge bg-secondary">Completed</span>
+                    {% elif race.is_active %}
+                    <span class="badge bg-success">Active</span>
+                    {% else %}
+                    <span class="badge bg-danger">Inactive</span>
+                    {% endif %}
+                </td>
+                <td>{{ race.entries|length }}</td>
+                <td>
+                    <div class="btn-group">
+                        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-sm btn-outline-primary">View</a>
+                        <a href="{{ url_for('edit_race', race_id=race.id) }}" class="btn btn-sm btn-outline-secondary">Edit</a>
+                        {% if race.is_started %}
+                        <a href="{{ url_for('race_timing', race_id=race.id) }}" class="btn btn-sm btn-warning">Timing</a>
+                        {% elif race.date >= current_user.created_at.date() and race.is_active %}
+                        <a href="{{ url_for('race_entries', race_id=race.id) }}" class="btn btn-sm btn-info">Entries</a>
+                        {% elif race.date < current_user.created_at.date() %}
+                        <a href="{{ url_for('race_results', race_id=race.id) }}" class="btn btn-sm btn-success">Results</a>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert alert-info">
+    No races found. <a href="{{ url_for('create_race') }}">Create your first race</a>.
+</div>
+{% endif %}
+{% endblock %}
+```
+
+### admin/race_form.html
+```html
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - Admin{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h2>{{ title }}</h2>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {{ form.hidden_tag() }}
+                    
+                    <div class="mb-3">
+                        {{ form.name.label(class="form-label") }}
+                        {{ form.name(class="form-control") }}
+                        {% for error in form.name.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.description.label(class="form-label") }}
+                        {{ form.description(class="form-control", rows=4) }}
+                        {% for error in form.description.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            {{ form.date.label(class="form-label") }}
+                            {{ form.date(class="form-control", type="date") }}
+                            {% for error in form.date.errors %}
+                            <div class="text-danger">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-6">
+                            {{ form.start_time.label(class="form-label") }}
+                            {{ form.start_time(class="form-control", type="time") }}
+                            {% for error in form.start_time.errors %}
+                            <div class="text-danger">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.location.label(class="form-label") }}
+                        {{ form.location(class="form-control") }}
+                        {% for error in form.location.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            {{ form.distance.label(class="form-label") }}
+                            {{ form.distance(class="form-control", type="number", step="0.1") }}
+                            {% for error in form.distance.errors %}
+                            <div class="text-danger">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-6">
+                            {{ form.max_participants.label(class="form-label") }}
+                            {{ form.max_participants(class="form-control", type="number") }}
+                            {% for error in form.max_participants.errors %}
+                            <div class="text-danger">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3 form-check">
+                        {{ form.is_active(class="form-check-input") }}
+                        {{ form.is_active.label(class="form-check-label") }}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.submit(class="btn btn-primary") }}
+                        <a href="{{ url_for('admin_races') }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+```
+
+### admin/race_entries.html
+```html
+{% extends "base.html" %}
+
+{% block title %}{{ race.name }} - Entries - Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Entries: {{ race.name }}</h1>
+    <div>
+        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-outline-primary">Race Details</a>
+        {% if not race.is_started %}
+        <a href="{{ url_for('race_timing', race_id=race.id) }}" class="btn btn-success">Start Race</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Race Information</h5>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}</p>
+                <p><strong>Location:</strong> {{ race.location }}</p>
+            </div>
+            <div class="col-md-6">
+                {% if race.distance %}
+                <p><strong>Distance:</strong> {{ race.distance }}km</p>
+                {% endif %}
+                <p><strong>Registered Runners:</strong> {{ entries|length }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if entries %}
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Registered Runners</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead>
+                    <tr>
+                        <th>Bib #</th>
+                        <th>Runner</th>
+                        <th>Email</th>
+                        <th>Registration Time</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in entries %}
+                    <tr>
+                        <td>{{ entry.bib_number }}</td>
+                        <td>{{ entry.runner.username }}</td>
+                        <td>{{ entry.runner.email }}</td>
+                        <td>{{ entry.registration_time.strftime('%b %d, %Y %H:%M') }}</td>
+                        <td>
+                            {% if entry.status == 'registered' %}
+                            <span class="badge bg-info">Registered</span>
+                            {% elif entry.status == 'started' %}
+                            <span class="badge bg-warning">Started</span>
+                            {% elif entry.status == 'finished' %}
+                            <span class="badge bg-success">Finished</span>
+                            {% elif entry.status == 'DNF' %}
+                            <span class="badge bg-danger">DNF</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-info">
+    No runners have registered for this race yet.
+</div>
+{% endif %}
+{% endblock %}
+```
+
+### admin/race_timing.html
+```html
+{% extends "base.html" %}
+
+{% block title %}{{ race.name }} - Race Timing - Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Race Timing: {{ race.name }}</h1>
+    <div>
+        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-outline-primary">Race Details</a>
+        <a href="{{ url_for('race_entries', race_id=race.id) }}" class="btn btn-outline-secondary">View Entries</a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Race Status</h5>
+            <div id="race-time-display" class="fs-5 fw-bold text-primary">00:00:00</div>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}</p>
+                <p><strong>Location:</strong> {{ race.location }}</p>
+                {% if race.distance %}
+                <p><strong>Distance:</strong> {{ race.distance }}km</p>
+                {% endif %}
+            </div>
+            <div class="col-md-6">
+                <p><strong>Total Runners:</strong> {{ entries|length }}</p>
+                <p><strong>Status:</strong> 
+                    {% if race.is_started %}
+                    <span class="badge bg-warning">In Progress</span>
+                    {% else %}
+                    <span class="badge bg-primary">Not Started</span>
+                    {% endif %}
+                </p>
+                {% if race.is_started %}
+                <p><strong>Started at:</strong> {{ race.start_timestamp.strftime('%H:%M:%S') }}</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="card-footer">
+        {% if not race.is_started %}
+        <button id="start-race-btn" class="btn btn-success btn-lg" data-race-id="{{ race.id }}">
+            Start Race
+        </button>
+        {% else %}
+        <div class="alert alert-warning">
+            Race is in progress. Use the form below to record runner finishes.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if race.is_started %}
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Record Finish</h5>
+            </div>
+            <div class="card-body">
+                <form id="finish-runner-form">
+                    <div class="input-group mb-3">
+                        <input type="number" id="bib-number" class="form-control form-control-lg" placeholder="Bib #" required>
+                        <button type="submit" class="btn btn-success btn-lg">Finish</button>
+                    </div>
+                </form>
+                <div id="finish-message" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Last 5 Finishers</h5>
+            </div>
+            <div class="card-body">
+                <div id="recent-finishers">
+                    <div class="text-center text-muted">
+                        No finishers yet
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Race Progress</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover" id="race-progress-table">
+                <thead>
+                    <tr>
+                        <th>Bib #</th>
+                        <th>Runner</th>
+                        <th>Status</th>
+                        <th>Finish Time</th>
+                        <th>Elapsed Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in entries %}
+                    <tr id="runner-{{ entry.bib_number }}" class="
+                        {% if entry.status == 'finished' %}table-success{% endif %}
+                        {% if entry.status == 'DNF' %}table-danger{% endif %}
+                    ">
+                        <td>{{ entry.bib_number }}</td>
+                        <td>{{ entry.runner.username }}</td>
+                        <td>
+                            {% if entry.status == 'registered' %}
+                            <span class="badge bg-secondary">Not Started</span>
+                            {% elif entry.status == 'started' %}
+                            <span class="badge bg-warning">Running</span>
+                            {% elif entry.status == 'finished' %}
+                            <span class="badge bg-success">Finished</span>
+                            {% elif entry.status == 'DNF' %}
+                            <span class="badge bg-danger">DNF</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ entry.finish_time.strftime('%H:%M:%S') if entry.finish_time else '--:--:--' }}</td>
+                        <td>
+                            {% if entry.elapsed_time %}
+                            {% set hours = (entry.elapsed_time / 3600)|int %}
+                            {% set minutes = ((entry.elapsed_time % 3600) / 60)|int %}
+                            {% set seconds = (entry.elapsed_time % 60)|int %}
+                            
+                            {% if hours > 0 %}
+                            {{ '%d:%02d:%02d'|format(hours, minutes, seconds) }}
+                            {% else %}
+                            {{ '%d:%02d'|format(minutes, seconds) }}
+                            {% endif %}
+                            {% else %}
+                            --:--
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Race Timer JavaScript
+document.addEventListener('DOMContentLoaded', function() {
+    // Variables for race timing
+    const raceStarted = {{ 'true' if race.is_started else 'false' }};
+    let raceStartTime = {{ race.start_timestamp.timestamp() * 1000 if race.is_started else 0 }};
+    let timerInterval;
+    
+    // Function to format time
+    function formatTime(milliseconds) {
+        let seconds = Math.floor(milliseconds / 1000);
+        let minutes = Math.floor(seconds / 60);
+        let hours = Math.floor(minutes / 60);
+        
+        seconds = seconds % 60;
+        minutes = minutes % 60;
+        
+        return (hours < 10 ? '0' : '') + hours + ':' +
+               (minutes < 10 ? '0' : '') + minutes + ':' +
+               (seconds < 10 ? '0' : '') + seconds;
+    }
+    
+    // Start the race timer display if race is in progress
+    if (raceStarted) {
+        updateRaceTime();
+        timerInterval = setInterval(updateRaceTime, 1000);
+    }
+    
+    function updateRaceTime() {
+        const now = new Date().getTime();
+        const elapsed = now - raceStartTime;
+        document.getElementById('race-time-display').textContent = formatTime(elapsed);
+    }
+    
+    // Handle race start button
+    const startRaceBtn = document.getElementById('start-race-btn');
+    if (startRaceBtn) {
+        startRaceBtn.addEventListener('click', function() {
+            const raceId = this.getAttribute('data-race-id');
+            
+            fetch(`/admin/race/${raceId}/start`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Reload the page to show the race timing interface
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error starting race:', error);
+                alert('An error occurred while starting the race.');
+            });
+        });
+    }
+    
+    // Handle finish runner form
+    const finishForm = document.getElementById('finish-runner-form');
+    if (finishForm) {
+        finishForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const bibNumber = document.getElementById('bib-number').value;
+            const raceId = {{ race.id }};
+            
+            const formData = new FormData();
+            formData.append('bib_number', bibNumber);
+            
+            fetch(`/admin/race/${raceId}/finish`, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                const messageDiv = document.getElementById('finish-message');
+                
+                if (data.success) {
+                    // Show success message
+                    messageDiv.innerHTML = `
+                        <div class="alert alert-success">
+                            Runner #${bibNumber} finished in ${formatTime(data.elapsed_time * 1000)}
+                        </div>
+                    `;
+                    
+                    // Clear the input field
+                    document.getElementById('bib-number').value = '';
+                    
+                    // Update the runner's status in the table
+                    const runnerRow = document.getElementById(`runner-${bibNumber}`);
+                    if (runnerRow) {
+                        runnerRow.classList.add('table-success');
+                        runnerRow.cells[2].innerHTML = '<span class="badge bg-success">Finished</span>';
+                        runnerRow.cells[4].textContent = formatTime(data.elapsed_time * 1000);
+                    }
+                    
+                    // Add to recent finishers
+                    updateRecentFinishers(bibNumber, data.elapsed_time);
+                } else {
+                    // Show error message
+                    messageDiv.innerHTML = `
+                        <div class="alert alert-danger">
+                            ${data.message}
+                        </div>
+                    `;
+                }
+                
+                // Clear message after 5 seconds
+                setTimeout(() => {
+                    messageDiv.innerHTML = '';
+                }, 5000);
+            })
+            .catch(error => {
+                console.error('Error finishing runner:', error);
+                alert('An error occurred while recording finish time.');
+            });
+        });
+    }
+    
+    // Function to update recent finishers list
+    function updateRecentFinishers(bibNumber, elapsedTime) {
+        const recentFinishersDiv = document.getElementById('recent-finishers');
+        
+        // Find the runner name from the table
+        const runnerRow = document.getElementById(`runner-${bibNumber}`);
+        const runnerName = runnerRow ? runnerRow.cells[1].textContent : 'Unknown';
+        
+        // Create a new finish entry
+        const finishTime = formatTime(elapsedTime * 1000);
+        const finishEntry = document.createElement('div');
+        finishEntry.className = 'alert alert-success mb-2';
+        finishEntry.innerHTML = `
+            <strong>Bib #${bibNumber}</strong> - ${runnerName}
+            <span class="float-end">${finishTime}</span>
+        `;
+        
+        // Add to the top of the list
+        if (recentFinishersDiv.firstChild && recentFinishersDiv.firstChild.className === 'text-center text-muted') {
+            recentFinishersDiv.innerHTML = '';
+        }
+        
+        recentFinishersDiv.insertBefore(finishEntry, recentFinishersDiv.firstChild);
+        
+        // Keep only the last 5 entries
+        const entries = recentFinishersDiv.children;
+        if (entries.length > 5) {
+            recentFinishersDiv.removeChild(entries[entries.length - 1]);
+        }
+    }
+});
+</script>
+{% endblock %}
+```
+
+### CSS and JavaScript Files
+
+Let's add the CSS and JavaScript files to make the application look better and function smoothly.
+
+#### static/css/style.css
+```css
+/* Custom styles for the Race Timer app */
+
+body {
+    padding-bottom: 60px;
+}
+
+.navbar-brand {
+    font-weight: bold;
+    font-size: 1.5rem;
+}
+
+.race-card {
+    transition: transform 0.2s;
+}
+
+.race-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.race-details-header {
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+.finish-time {
+    font-family: monospace;
+    font-size: 1.2rem;
+}
+
+/* Admin dashboard styling */
+.dashboard-stat {
+    text-align: center;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+}
+
+.dashboard-stat h3 {
+    margin-bottom: 5px;
+}
+
+.dashboard-stat p {
+    font-size: 2rem;
+    font-weight: bold;
+    margin: 0;
+}
+
+.dashboard-stat.bg-primary {
+    background-color: #cfe2ff;
+    color: #084298;
+}
+
+.dashboard-stat.bg-success {
+    background-color: #d1e7dd;
+    color: #0f5132;
+}
+
+.dashboard-stat.bg-warning {
+    background-color: #fff3cd;
+    color: #664d03;
+}
+
+/* Race timing page styling */
+#race-time-display {
+    font-family: monospace;
+    font-size: 2rem;
+    letter-spacing: 2px;
+}
+
+/* Form styling enhancements */
+.form-control:focus {
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+/* Results table styling */
+.results-table th {
+    background-color: #f8f9fa;
+}
+
+.results-table td {
+    vertical-align: middle;
+}
+
+/* Footer styling */
+footer {
+    background-color: #f8f9fa;
+    padding: 20px 0;
+    margin-top: 40px;
+}
+```
+
+#### static/js/script.js
+```javascript
+// Main JavaScript file for Race Timer app
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Enable Bootstrap tooltips
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+    var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl)
+    });
+    
+    // Enable Bootstrap popovers
+    var popoverTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'))
+    var popoverList = popoverTriggerList.map(function (popoverTriggerEl) {
+        return new bootstrap.Popover(popoverTriggerEl)
+    });
+    
+    // Add form validation styles
+    const forms = document.querySelectorAll('.needs-validation');
+    
+    Array.from(forms).forEach(form => {
+        form.addEventListener('submit', event => {
+            if (!form.checkValidity()) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            
+            form.classList.add('was-validated');
+        }, false);
+    });
+    
+    // Auto-dismiss alerts after 5 seconds
+    setTimeout(function() {
+        const alerts = document.querySelectorAll('.alert-dismissible');
+        alerts.forEach(function(alert) {
+            const bsAlert = new bootstrap.Alert(alert);
+            bsAlert.close();
+        });
+    }, 5000);
+});
+```
+
+## Step 6: SQLite Database Setup
+
+The database will be automatically created when the application runs for the first time. The structure is defined in the models.py file.
+
+## Step 7: Running the Application
+
+To run the application:
+
+1. Create a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+2. Install the dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the Flask application:
+```bash
+python app.py
+```
+
+4. Access the application at http://127.0.0.1:5000
+
+## User Guide
+
+### Admin Access:
+- Default admin credentials: username: `admin`, password: `adminpassword`
+- Use the admin panel to:
+  - Create and manage races
+  - Start races
+  - Input runner finish times
+  - View race entries and results
+
+### Public User Access:
+- Register an account
+- Browse upcoming and past races
+- Sign up for races
+- View race results
+
+## Security Notes
+
+- For a production environment:
+  - Change the secret key
+  - Consider using a more robust database (PostgreSQL, MySQL)
+  - Implement CSRF protection
+  - Add more comprehensive error handling
+  - Set up proper logging
+
+
+  Key Features
+Admin Interface
+
+Dashboard with active and upcoming races
+Create, edit, and manage races
+View race entries
+Start races with a single click
+Record runner finish times by inputting bib numbers
+Real-time race timing display
+View race results
+
+Public Interface
+
+Browse upcoming and past races
+View race details
+Register for races
+View race results
+User registration and authentication
+
+Technical Details
+
+Python/Flask backend
+SQLite database for storing race, user, and result data
+Bootstrap 5 for responsive design (no jQuery)
+Vanilla JavaScript for interactive features
+User authentication with Flask-Login
+
+How to Use the App
+
+Start the app and create an admin account
+Create races with details like date, distance, and location
+Users can register accounts and sign up for races
+On race day, the admin starts the race with the "Start Race" button
+As runners finish, admin enters their bib numbers to record finish times
+Results are automatically calculated and displayed
+
+The application is designed to be intuitive and mobile-friendly, with clean Bootstrap styling that makes it look professional.

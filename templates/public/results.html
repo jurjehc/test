@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Results: {{ race.name }} - Race Timer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-3">Results: {{ race.name }}</h1>
+        <p class="lead">
+            {{ race.date.strftime('%B %d, %Y') }} | {{ race.location }}
+            {% if race.distance %}
+            | {{ race.distance }}km
+            {% endif %}
+        </p>
+        
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Finisher Results</h5>
+            </div>
+            <div class="card-body">
+                {% if results %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Position</th>
+                                <th>Bib</th>
+                                <th>Runner</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for entry in results %}
+                            <tr>
+                                <td>{{ loop.index }}</td>
+                                <td>{{ entry.bib_number }}</td>
+                                <td>{{ entry.runner.username }}</td>
+                                <td>
+                                    {% if entry.elapsed_time %}
+                                    {% set hours = (entry.elapsed_time / 3600)|int %}
+                                    {% set minutes = ((entry.elapsed_time % 3600) / 60)|int %}
+                                    {% set seconds = (entry.elapsed_time % 60)|int %}
+                                    
+                                    {% if hours > 0 %}
+                                    {{ '%d:%02d:%02d'|format(hours, minutes, seconds) }}
+                                    {% else %}
+                                    {{ '%d:%02d'|format(minutes, seconds) }}
+                                    {% endif %}
+                                    {% else %}
+                                    --:--
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info">
+                    No results available yet. This race might not have finished or no runners have completed it.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-primary">Back to Race Details</a>
+        <a href="{{ url_for('races') }}" class="btn btn-secondary">All Races</a>
+    </div>
+</div>
+{% endblock %}

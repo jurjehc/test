@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard - Race Timer{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Admin Dashboard</h1>
+
+<div class="row">
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Ongoing Races</h5>
+            </div>
+            <div class="card-body">
+                {% if ongoing_races %}
+                <div class="list-group">
+                    {% for race in ongoing_races %}
+                    <a href="{{ url_for('race_timing', race_id=race.id) }}" class="list-group-item list-group-item-action">
+                        <div class="d-flex w-100 justify-content-between">
+                            <h5 class="mb-1">{{ race.name }}</h5>
+                            <small>Started: {{ race.start_timestamp.strftime('%H:%M:%S') }}</small>
+                        </div>
+                        <p class="mb-1">{{ race.location }}</p>
+                        <small>{{ race.entries|selectattr('status', 'equalto', 'finished')|list|length }} of {{ race.entries|length }} runners finished</small>
+                    </a>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p>No races currently in progress.</p>
+                <a href="{{ url_for('admin_races') }}" class="btn btn-outline-primary">Manage Races</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Upcoming Races</h5>
+            </div>
+            <div class="card-body">
+                {% if upcoming_races %}
+                <div class="list-group">
+                    {% for race in upcoming_races %}
+                    <a href="{{ url_for('race_details', race_id=race.id) }}" class="list-group-item list-group-item-action">
+                        <div class="d-flex w-100 justify-content-between">
+                            <h5 class="mb-1">{{ race.name }}</h5>
+                            <small>{{ race.date.strftime('%b %d, %Y') }}</small>
+                        </div>
+                        <p class="mb-1">{{ race.location }}</p>
+                        <small>{{ race.entries|length }} runners registered</small>
+                    </a>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p>No upcoming races scheduled.</p>
+                {% endif %}
+                
+                <div class="mt-3">
+                    <a href="{{ url_for('create_race') }}" class="btn btn-success">Create New Race</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0">Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <a href="{{ url_for('admin_races') }}" class="btn btn-outline-primary w-100 py-3">
+                            <i class="bi bi-list-check"></i> Manage Races
+                        </a>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <a href="{{ url_for('create_race') }}" class="btn btn-outline-success w-100 py-3">
+                            <i class="bi bi-plus-circle"></i> Create Race
+                        </a>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <a href="{{ url_for('races') }}" class="btn btn-outline-info w-100 py-3">
+                            <i class="bi bi-eye"></i> View Public Site
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

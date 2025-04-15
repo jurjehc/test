@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Races - Race Timer{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Races</h1>
+
+<ul class="nav nav-tabs mb-4" id="raceTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming" type="button" role="tab">
+            Upcoming Races
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="past-tab" data-bs-toggle="tab" data-bs-target="#past" type="button" role="tab">
+            Past Races
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content" id="raceTabContent">
+    <div class="tab-pane fade show active" id="upcoming" role="tabpanel">
+        {% if upcoming_races %}
+        <div class="row row-cols-1 row-cols-md-2 g-4">
+            {% for race in upcoming_races %}
+            <div class="col">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ race.name }}</h5>
+                        <h6 class="card-subtitle mb-2 text-muted">{{ race.date.strftime('%B %d, %Y') }}</h6>
+                        <p class="card-text">
+                            <strong>Location:</strong> {{ race.location }}<br>
+                            {% if race.distance %}
+                            <strong>Distance:</strong> {{ race.distance }}km<br>
+                            {% endif %}
+                            {% if race.start_time %}
+                            <strong>Start Time:</strong> {{ race.start_time.strftime('%H:%M') }}<br>
+                            {% endif %}
+                        </p>
+                        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-primary">View Details</a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info">No upcoming races found.</div>
+        {% endif %}
+    </div>
+    
+    <div class="tab-pane fade" id="past" role="tabpanel">
+        {% if past_races %}
+        <div class="row row-cols-1 row-cols-md-2 g-4">
+            {% for race in past_races %}
+            <div class="col">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ race.name }}</h5>
+                        <h6 class="card-subtitle mb-2 text-muted">{{ race.date.strftime('%B %d, %Y') }}</h6>
+                        <p class="card-text">
+                            <strong>Location:</strong> {{ race.location }}<br>
+                            {% if race.distance %}
+                            <strong>Distance:</strong> {{ race.distance }}km<br>
+                            {% endif %}
+                        </p>
+                        <div class="d-flex gap-2">
+                            <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-outline-primary">View Details</a>
+                            <a href="{{ url_for('race_results', race_id=race.id) }}" class="btn btn-success">Results</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="alert alert-info">No past races found.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

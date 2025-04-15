@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}{{ race.name }} - Race Details{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h1 class="mb-3">{{ race.name }}</h1>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="mb-3">
+                    <strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}
+                </div>
+                
+                {% if race.start_time %}
+                <div class="mb-3">
+                    <strong>Start Time:</strong> {{ race.start_time.strftime('%H:%M') }}
+                </div>
+                {% endif %}
+                
+                <div class="mb-3">
+                    <strong>Location:</strong> {{ race.location }}
+                </div>
+                
+                {% if race.distance %}
+                <div class="mb-3">
+                    <strong>Distance:</strong> {{ race.distance }}km
+                </div>
+                {% endif %}
+                
+                {% if race.max_participants %}
+                <div class="mb-3">
+                    <strong>Maximum Participants:</strong> {{ race.max_participants }}
+                    <small class="text-muted">({{ race.entries|length }} registered so far)</small>
+                </div>
+                {% endif %}
+                
+                {% if race.description %}
+                <div class="mb-3">
+                    <strong>Description:</strong>
+                    <p>{{ race.description }}</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="mb-4">
+            {% if race.date >= current_user.created_at.date() and race.is_active %}
+                {% set is_registered = race.entries|selectattr('user_id', 'equalto', current_user.id)|list|length > 0 if current_user.is_authenticated else False %}
+                
+                {% if is_registered %}
+                    <div class="alert alert-success">
+                        <strong>You are registered for this race!</strong>
+                        {% set entry = race.entries|selectattr('user_id', 'equalto', current_user.id)|first %}
+                        <p class="mb-0">Your bib number: <strong>{{ entry.bib_number }}</strong></p>
+                    </div>
+                {% elif race.max_participants and race.entries|length >= race.max_participants %}
+                    <div class="alert alert-warning">
+                        This race has reached its maximum number of participants.
+                    </div>
+                {% elif current_user.is_authenticated %}
+                    <a href="{{ url_for('race_signup', race_id=race.id) }}" class="btn btn-primary btn-lg">Register for this Race</a>
+                {% else %}
+                    <div class="alert alert-info">
+                        <a href="{{ url_for('login') }}">Log in</a> or <a href="{{ url_for('register') }}">register</a> to sign up for this race.
+                    </div>
+                {% endif %}
+            {% elif race.date < current_user.created_at.date() %}
+                <div class="alert alert-secondary">
+                    This race has already taken place.
+                    <a href="{{ url_for('race_results', race_id=race.id) }}" class="btn btn-outline-primary ms-3">View Results</a>
+                </div>
+            {% else %}
+                <div class="alert alert-warning">
+                    Registration for this race is closed.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                Quick Links
+            </div>
+            <ul class="list-group list-group-flush">
+                <li class="list-group-item">
+                    <a href="{{ url_for('races') }}">Back to All Races</a>
+                </li>
+                {% if race.date < current_user.created_at.date() %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_results', race_id=race.id) }}">View Race Results</a>
+                </li>
+                {% endif %}
+                {% if current_user.is_authenticated and current_user.is_admin %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('edit_race', race_id=race.id) }}">Edit Race</a>
+                </li>
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_entries', race_id=race.id) }}">View Entries</a>
+                </li>
+                {% if race.is_active and not race.is_started %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_timing', race_id=race.id) }}">Start Race</a>
+                </li>
+                {% elif race.is_started %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('race_timing', race_id=race.id) }}">Race Timing</a>
+                </li>
+                {% endif %}
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}

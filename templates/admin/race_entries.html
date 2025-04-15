@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}{{ race.name }} - Entries - Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Entries: {{ race.name }}</h1>
+    <div>
+        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-outline-primary">Race Details</a>
+        {% if not race.is_started %}
+        <a href="{{ url_for('race_timing', race_id=race.id) }}" class="btn btn-success">Start Race</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Race Information</h5>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}</p>
+                <p><strong>Location:</strong> {{ race.location }}</p>
+            </div>
+            <div class="col-md-6">
+                {% if race.distance %}
+                <p><strong>Distance:</strong> {{ race.distance }}km</p>
+                {% endif %}
+                <p><strong>Registered Runners:</strong> {{ entries|length }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if entries %}
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Registered Runners</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead>
+                    <tr>
+                        <th>Bib #</th>
+                        <th>Runner</th>
+                        <th>Email</th>
+                        <th>Registration Time</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in entries %}
+                    <tr>
+                        <td>{{ entry.bib_number }}</td>
+                        <td>{{ entry.runner.username }}</td>
+                        <td>{{ entry.runner.email }}</td>
+                        <td>{{ entry.registration_time.strftime('%b %d, %Y %H:%M') }}</td>
+                        <td>
+                            {% if entry.status == 'registered' %}
+                            <span class="badge bg-info">Registered</span>
+                            {% elif entry.status == 'started' %}
+                            <span class="badge bg-warning">Started</span>
+                            {% elif entry.status == 'finished' %}
+                            <span class="badge bg-success">Finished</span>
+                            {% elif entry.status == 'DNF' %}
+                            <span class="badge bg-danger">DNF</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-info">
+    No runners have registered for this race yet.
+</div>
+{% endif %}
+{% endblock %}

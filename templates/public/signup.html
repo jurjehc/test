@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Register for {{ race.name }} - Race Timer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h1 class="mb-4">Register for {{ race.name }}</h1>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Race Details</h5>
+                <p><strong>Date:</strong> {{ race.date.strftime('%B %d, %Y') }}</p>
+                <p><strong>Location:</strong> {{ race.location }}</p>
+                {% if race.distance %}
+                <p><strong>Distance:</strong> {{ race.distance }}km</p>
+                {% endif %}
+                {% if race.start_time %}
+                <p><strong>Start Time:</strong> {{ race.start_time.strftime('%H:%M') }}</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5>Registration Form</h5>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {{ form.hidden_tag() }}
+                    
+                    <div class="mb-3">
+                        <p><strong>Registering as:</strong> {{ current_user.username }}</p>
+                        <p><strong>Email:</strong> {{ current_user.email }}</p>
+                    </div>
+                    
+                    <div class="mb-3 form-check">
+                        {{ form.agree_to_terms(class="form-check-input") }}
+                        {{ form.agree_to_terms.label(class="form-check-label") }}
+                        {% for error in form.agree_to_terms.errors %}
+                        <div class="text-danger">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="mb-3">
+                        {{ form.submit(class="btn btn-primary") }}
+                        <a href="{{ url_for('race_details', race_id=race.id) }}" class="btn btn-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

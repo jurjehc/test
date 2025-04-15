@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Race Timer - Home{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h1 class="mb-4">Welcome to Race Timer</h1>
+        <p class="lead">Track your races, register for events, and manage your race timing all in one place.</p>
+        
+        <div class="mt-4">
+            <h2>Upcoming Races</h2>
+            {% if races %}
+            <div class="list-group">
+                {% for race in races %}
+                <a href="{{ url_for('race_details', race_id=race.id) }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">{{ race.name }}</h5>
+                        <small>{{ race.date.strftime('%b %d, %Y') }}</small>
+                    </div>
+                    <p class="mb-1">{{ race.location }}</p>
+                    {% if race.distance %}
+                    <small>Distance: {{ race.distance }}km</small>
+                    {% endif %}
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p>No upcoming races at the moment.</p>
+            {% endif %}
+            
+            <div class="mt-3">
+                <a href="{{ url_for('races') }}" class="btn btn-primary">View All Races</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                Quick Links
+            </div>
+            <ul class="list-group list-group-flush">
+                <li class="list-group-item">
+                    <a href="{{ url_for('races') }}">Browse Races</a>
+                </li>
+                {% if current_user.is_authenticated %}
+                    {% if current_user.is_admin %}
+                    <li class="list-group-item">
+                        <a href="{{ url_for('admin_dashboard') }}">Admin Dashboard</a>
+                    </li>
+                    <li class="list-group-item">
+                        <a href="{{ url_for('create_race') }}">Create New Race</a>
+                    </li>
+                    {% endif %}
+                {% else %}
+                <li class="list-group-item">
+                    <a href="{{ url_for('login') }}">Log In</a>
+                </li>
+                <li class="list-group-item">
+                    <a href="{{ url_for('register') }}">Register</a>
+                </li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
